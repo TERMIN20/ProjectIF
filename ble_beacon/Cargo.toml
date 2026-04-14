@@ -1,0 +1,9 @@
+[package]
+name = "ble_beacon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bluer = { version = "0.17.4", default-features = false, features = ["bluetoothd"] }
+local-ip-address = "0.6.11"
+tokio = { version = "1.51.1", default-features = false, features = ["macros", "rt", "time"] }
