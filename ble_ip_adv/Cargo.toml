@@ -1,5 +1,5 @@
 [package]
-name = "ble_beacon"
+name = "ble_ip_adv"
 version = "0.1.0"
 edition = "2024"
 
