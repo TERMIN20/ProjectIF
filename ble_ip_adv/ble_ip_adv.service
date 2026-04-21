@@ -1,0 +1,13 @@
+[Unit]
+Description=BLE IP Address Advertiser
+Requires=bluetooth.service
+After=bluetooth.service 
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/ble_ip_adv
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
