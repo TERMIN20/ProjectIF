@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS deps
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -15,7 +15,9 @@ RUN pip install --no-cache-dir --upgrade pip \
     && git clone https://github.com/facebookresearch/sam3.git /opt/sam3 \
     && pip install --no-cache-dir -e /opt/sam3 \
     && pip install --no-cache-dir -r /app/requirements.txt \
-    && python -c "import av, einops, ftfy, iopath, pycocotools, regex, timm; from sam3 import build_sam3_image_model; from sam3.model.sam3_image_processor import Sam3Processor"
+    && python -c "import av, einops, ftfy, iopath, psutil, pycocotools, regex, timm; from sam3 import build_sam3_image_model; from sam3.model.sam3_image_processor import Sam3Processor"
+
+FROM deps AS app
 
 COPY multiSegment.py pixel_count.py /app/
 COPY entrypoint.sh /app/entrypoint.sh

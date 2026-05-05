@@ -4,3 +4,4 @@ python-dotenv
 einops
 pycocotools
 av
+psutil
