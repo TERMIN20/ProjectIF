@@ -2,3 +2,5 @@ numpy
 Pillow
 python-dotenv
 einops
+pycocotools
+av
