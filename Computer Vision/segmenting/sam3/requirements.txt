@@ -1,6 +1,7 @@
 numpy
 Pillow
 python-dotenv
+einops
 torch
 torchvision
 git+https://github.com/facebookresearch/sam3.git
