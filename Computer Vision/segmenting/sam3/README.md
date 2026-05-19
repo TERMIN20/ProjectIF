@@ -27,7 +27,8 @@ That script installs Samba, creates `/pic_shared`, installs a recurring capture 
 ## Run on the computer with Docker Compose
 1. Copy `.env.example` to `.env`.
 2. Set `PI_SHARE_HOST`, `PI_SHARE_USER`, and `PI_SHARE_PASSWORD` for the Raspberry Pi.
-2. From this directory:
+3. Request access to the gated Meta SAM3 model repo on Hugging Face, create a read token at `https://huggingface.co/settings/tokens`, and set `HF_TOKEN` in `.env`.
+4. From this directory:
    ```bash
    docker compose up --build
    ```
@@ -40,6 +41,7 @@ pixel_count: image=/data/output/example_1234abcd_plant_mask.png plant_pixels=123
 ## Environment variables
 - `PI_SHARE_HOST`, `PI_SHARE_NAME`, `PI_SHARE_USER`, `PI_SHARE_PASSWORD`, `PI_SHARE_VERS`: Docker SMB/CIFS mount settings
 - `MASK_OUTPUT_DIR_HOST`, `STATE_DIR_HOST`: local folders for masked outputs and pipeline state
+- `HF_TOKEN`: Hugging Face read token for the gated SAM3 checkpoint repo
 - `CHECK_INTERVAL_SECONDS`: polling interval for scanning the mounted share
 - `FILE_STABLE_SECONDS`: how long a new file must remain unchanged before processing
 - `PROMPT_TEXT`, `LOG_LEVEL`, `IMAGE_EXTENSIONS`, `DEVICE`: SAM3 pipeline options

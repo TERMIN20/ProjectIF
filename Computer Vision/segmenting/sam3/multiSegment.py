@@ -226,6 +226,12 @@ def process_one_image(
 
 def run_loop(config: Config, run_once: bool = False) -> None:
     logging.info("Loading SAM3 model.")
+    if not os.getenv("HF_TOKEN") and not os.getenv("HUGGING_FACE_HUB_TOKEN"):
+        logging.warning(
+            "HF_TOKEN is not set. SAM3 checkpoint downloads are gated; "
+            "request access to the model repo on Hugging Face and set a read token "
+            "in .env before first startup."
+        )
     model = build_sam3_image_model()
     processor = Sam3Processor(model, confidence_threshold=0.5)
     logging.info("SAM3 ready.")
