@@ -45,6 +45,7 @@ pixel_count: image=/data/output/example_1234abcd_plant_mask.png plant_pixels=123
 - `CHECK_INTERVAL_SECONDS`: polling interval for scanning the mounted share
 - `FILE_STABLE_SECONDS`: how long a new file must remain unchanged before processing
 - `PROMPT_TEXT`, `LOG_LEVEL`, `IMAGE_EXTENSIONS`, `DEVICE`: SAM3 pipeline options
+- `MODEL_PRECISION`: `auto` by default. Uses CUDA `float16` autocast when available and CPU `float32`; set `float32`, `float16`, or `bfloat16` to override.
 
 ## Local run (optional)
 Set env vars (`INPUT_DIR`, `MASK_OUTPUT_DIR`, `STATE_FILE`) and run:

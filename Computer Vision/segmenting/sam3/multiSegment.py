@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ class Config:
     log_level: str
     image_extensions: set[str]
     device: str
+    precision: str
 
 
 def load_config() -> Config:
@@ -49,6 +51,7 @@ def load_config() -> Config:
     raw_ext = os.getenv("IMAGE_EXTENSIONS", ".jpg,.jpeg,.png,.bmp,.tif,.tiff")
     extensions = {e.strip().lower() for e in raw_ext.split(",") if e.strip()}
     device = os.getenv("DEVICE", "auto").strip().lower()
+    precision = os.getenv("MODEL_PRECISION", "auto").strip().lower()
 
     return Config(
         input_dir=Path(input_dir),
@@ -60,6 +63,7 @@ def load_config() -> Config:
         log_level=log_level,
         image_extensions=extensions,
         device=device,
+        precision=precision,
     )
 
 
@@ -80,9 +84,40 @@ def validate_runtime(config: Config) -> None:
     if config.device in {"gpu-required", "cuda-required"} and not torch.cuda.is_available():
         raise RuntimeError("DEVICE is gpu-required, but CUDA is not available.")
 
+    if config.precision not in {"auto", "float32", "fp32", "float16", "fp16", "bfloat16", "bf16"}:
+        raise ValueError(
+            "MODEL_PRECISION must be one of: auto, float32, fp32, float16, fp16, bfloat16, bf16."
+        )
+
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+
+
+def resolve_device(requested: str) -> torch.device:
+    if requested in {"gpu-required", "cuda-required", "cuda", "gpu"}:
+        return torch.device("cuda")
+    if requested == "cpu":
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def resolve_dtype(precision: str, device: torch.device) -> torch.dtype:
+    if precision == "auto":
+        return torch.float16 if device.type == "cuda" else torch.float32
+    if precision in {"float16", "fp16"}:
+        return torch.float16
+    if precision in {"bfloat16", "bf16"}:
+        return torch.bfloat16
+    return torch.float32
+
+
+def inference_context(device: torch.device, dtype: torch.dtype):
+    if device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}:
+        return torch.autocast(device_type="cuda", dtype=dtype)
+    return nullcontext()
 
 
 def load_state(state_file: Path) -> Dict[str, Dict[str, Any]]:
@@ -211,12 +246,15 @@ def process_one_image(
     processor: Sam3Processor,
     prompt_text: str,
     output_dir: Path,
+    device: torch.device,
+    dtype: torch.dtype,
 ) -> Path:
     with Image.open(image_path) as img:
         rgb = np.array(img.convert("RGB"))
-        state = processor.set_image(img.convert("RGB"))
-        processor.reset_all_prompts(state)
-        state = processor.set_text_prompt(state=state, prompt=prompt_text)
+        with torch.inference_mode(), inference_context(device, dtype):
+            state = processor.set_image(img.convert("RGB"))
+            processor.reset_all_prompts(state)
+            state = processor.set_text_prompt(state=state, prompt=prompt_text)
         union_mask = extract_union_mask(state, height=rgb.shape[0], width=rgb.shape[1])
 
     out_path = output_path_for(image_path, output_dir)
@@ -232,9 +270,11 @@ def run_loop(config: Config, run_once: bool = False) -> None:
             "request access to the model repo on Hugging Face and set a read token "
             "in .env before first startup."
         )
-    model = build_sam3_image_model()
+    device = resolve_device(config.device)
+    dtype = resolve_dtype(config.precision, device)
+    model = build_sam3_image_model().to(device=device).float()
     processor = Sam3Processor(model, confidence_threshold=0.5)
-    logging.info("SAM3 ready.")
+    logging.info("SAM3 ready. device=%s precision=%s", device, dtype)
 
     while True:
         state = load_state(config.state_file)
@@ -263,6 +303,8 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     processor=processor,
                     prompt_text=config.prompt_text,
                     output_dir=config.mask_output_dir,
+                    device=device,
+                    dtype=dtype,
                 )
                 logging.info("Mask written output=%s", out_path)
                 run_pixel_counter(out_path)
@@ -295,7 +337,7 @@ def main() -> int:
         return 1
 
     logging.info(
-        "Pipeline config input_dir=%s output_dir=%s state_file=%s interval=%d stable_seconds=%d prompt=%s device=%s",
+        "Pipeline config input_dir=%s output_dir=%s state_file=%s interval=%d stable_seconds=%d prompt=%s device=%s precision=%s",
         config.input_dir,
         config.mask_output_dir,
         config.state_file,
@@ -303,6 +345,7 @@ def main() -> int:
         config.file_stable_seconds,
         config.prompt_text,
         config.device,
+        config.precision,
     )
 
     try:
