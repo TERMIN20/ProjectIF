@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 FROM deps AS app
 
-COPY multiSegment.py pixel_count.py /app/
+COPY analytics_store.py dashboard.py multiSegment.py pixel_count.py /app/
 COPY entrypoint.sh /app/entrypoint.sh
 RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 

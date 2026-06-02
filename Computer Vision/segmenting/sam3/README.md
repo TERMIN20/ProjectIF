@@ -7,9 +7,13 @@
 - Runs SAM3 text-prompt segmentation with prompt `"plant"` (configurable).
 - Writes masked images where plant pixels keep original color and all other pixels are black.
 - Runs a second script to count non-black pixels and logs the count.
+- Persists per-image analytics to SQLite.
+- Serves an interactive Streamlit dashboard with Plotly growth charts and image review.
 
 ## Files
 - `multiSegment.py`: watcher + segmentation pipeline
+- `analytics_store.py`: SQLite schema + analytics persistence helpers
+- `dashboard.py`: Streamlit analytics dashboard
 - `pixel_count.py`: standalone masked-image pixel counter
 - `entrypoint.sh`: startup validation for mounted input/output paths
 - `Dockerfile`: container image
@@ -38,6 +42,13 @@ Pipeline logs include lines like:
 pixel_count: image=/data/output/example_1234abcd_plant_mask.png plant_pixels=12345
 ```
 
+Open the dashboard at:
+```text
+http://localhost:8501
+```
+
+The dashboard includes KPI cards, interactive plant-pixel and coverage-ratio charts, date/search filters, a processed image table, and side-by-side source/masked image review. Analytics are stored in `${STATE_DIR_HOST}/analytics.sqlite`.
+
 ## Environment variables
 - `PI_SHARE_HOST`, `PI_SHARE_NAME`, `PI_SHARE_USER`, `PI_SHARE_PASSWORD`, `PI_SHARE_VERS`: Docker SMB/CIFS mount settings
 - `MASK_OUTPUT_DIR_HOST`, `STATE_DIR_HOST`: local folders for masked outputs and pipeline state
@@ -46,6 +57,7 @@ pixel_count: image=/data/output/example_1234abcd_plant_mask.png plant_pixels=123
 - `FILE_STABLE_SECONDS`: how long a new file must remain unchanged before processing
 - `PROMPT_TEXT`, `LOG_LEVEL`, `IMAGE_EXTENSIONS`, `DEVICE`: SAM3 pipeline options
 - `MODEL_PRECISION`: `auto` by default. Uses CUDA `float16` autocast when available and CPU `float32`; set `float32`, `float16`, or `bfloat16` to override.
+- `DASHBOARD_PORT`: host port for the Streamlit dashboard, defaults to `8501`.
 
 ## Local run (optional)
 Set env vars (`INPUT_DIR`, `MASK_OUTPUT_DIR`, `STATE_FILE`) and run:

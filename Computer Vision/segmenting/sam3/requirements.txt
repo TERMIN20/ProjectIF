@@ -5,3 +5,6 @@ einops
 pycocotools
 av
 psutil
+pandas
+plotly
+streamlit

@@ -9,6 +9,7 @@ services:
       INPUT_DIR: /data/input
       MASK_OUTPUT_DIR: /data/output
       STATE_FILE: /data/state/processed_state.json
+      ANALYTICS_DB: /data/state/analytics.sqlite
     volumes:
       - pi-input:/data/input:ro
       - ${MASK_OUTPUT_DIR_HOST}:/data/output
@@ -20,6 +21,29 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
+
+  sam3-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      ANALYTICS_DB: /data/state/analytics.sqlite
+    volumes:
+      - pi-input:/data/input:ro
+      - ${MASK_OUTPUT_DIR_HOST}:/data/output:ro
+      - ${STATE_DIR_HOST}:/data/state
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    entrypoint:
+      - streamlit
+      - run
+      - /app/dashboard.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --browser.gatherUsageStats=false
+    restart: unless-stopped
 
 volumes:
   pi-input:

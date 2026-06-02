@@ -20,12 +20,15 @@ from PIL import Image
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
+from analytics_store import ImageAnalytics, connect, upsert_image_analytics
+
 
 @dataclass(frozen=True)
 class Config:
     input_dir: Path
     mask_output_dir: Path
     state_file: Path
+    analytics_db: Path
     check_interval_seconds: int
     file_stable_seconds: int
     prompt_text: str
@@ -44,6 +47,10 @@ def load_config() -> Config:
     if not input_dir or not output_dir or not state_file:
         raise ValueError("INPUT_DIR, MASK_OUTPUT_DIR, and STATE_FILE must be set.")
 
+    analytics_db = os.getenv("ANALYTICS_DB")
+    if not analytics_db:
+        analytics_db = str(Path(state_file).with_name("analytics.sqlite"))
+
     interval = int(os.getenv("CHECK_INTERVAL_SECONDS", "3600"))
     file_stable_seconds = int(os.getenv("FILE_STABLE_SECONDS", "30"))
     prompt = os.getenv("PROMPT_TEXT", "plant")
@@ -57,6 +64,7 @@ def load_config() -> Config:
         input_dir=Path(input_dir),
         mask_output_dir=Path(output_dir),
         state_file=Path(state_file),
+        analytics_db=Path(analytics_db),
         check_interval_seconds=interval,
         file_stable_seconds=file_stable_seconds,
         prompt_text=prompt,
@@ -81,6 +89,7 @@ def validate_runtime(config: Config) -> None:
 
     config.mask_output_dir.mkdir(parents=True, exist_ok=True)
     config.state_file.parent.mkdir(parents=True, exist_ok=True)
+    config.analytics_db.parent.mkdir(parents=True, exist_ok=True)
 
     if config.device in {"gpu-required", "cuda-required"} and not torch.cuda.is_available():
         raise RuntimeError("DEVICE is gpu-required, but CUDA is not available.")
@@ -271,6 +280,7 @@ def run_loop(config: Config, run_once: bool = False) -> None:
     dtype = resolve_dtype(config.precision, device)
     model = build_sam3_image_model().to(device=device).float()
     processor = Sam3Processor(model, confidence_threshold=0.5)
+    analytics_conn = connect(config.analytics_db)
     logging.info("SAM3 ready. device=%s precision=%s", device, dtype)
 
     while True:
@@ -312,10 +322,26 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     foreground_pixels / total_pixels if total_pixels else 0,
                 )
                 run_pixel_counter(out_path)
+                processed_at = datetime.now(timezone.utc).isoformat()
+                sig = file_signature(image_path)
+                upsert_image_analytics(
+                    analytics_conn,
+                    ImageAnalytics(
+                        source_path=key,
+                        output_path=str(out_path.resolve()),
+                        processed_at=processed_at,
+                        foreground_pixels=foreground_pixels,
+                        total_pixels=total_pixels,
+                        foreground_ratio=foreground_pixels / total_pixels if total_pixels else 0,
+                        mask_count=mask_count,
+                        source_mtime_ns=sig["mtime_ns"],
+                        source_size_bytes=sig["size_bytes"],
+                    ),
+                )
                 state[key] = {
-                    **file_signature(image_path),
+                    **sig,
                     "output_path": str(out_path.resolve()),
-                    "processed_at": datetime.now(timezone.utc).isoformat(),
+                    "processed_at": processed_at,
                 }
                 atomic_write_json(config.state_file, state)
             except Exception as exc:
@@ -341,10 +367,11 @@ def main() -> int:
         return 1
 
     logging.info(
-        "Pipeline config input_dir=%s output_dir=%s state_file=%s interval=%d stable_seconds=%d prompt=%s device=%s precision=%s",
+        "Pipeline config input_dir=%s output_dir=%s state_file=%s analytics_db=%s interval=%d stable_seconds=%d prompt=%s device=%s precision=%s",
         config.input_dir,
         config.mask_output_dir,
         config.state_file,
+        config.analytics_db,
         config.check_interval_seconds,
         config.file_stable_seconds,
         config.prompt_text,
