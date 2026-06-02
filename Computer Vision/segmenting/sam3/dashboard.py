@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import math
+import json
 from datetime import date
 from pathlib import Path
 
@@ -16,6 +17,13 @@ from analytics_store import connect
 DB_PATH = Path(os.getenv("ANALYTICS_DB", "/data/state/analytics.sqlite"))
 STATE_FILE = Path(os.getenv("STATE_FILE", "/data/state/processed_state.json"))
 MASK_OUTPUT_DIR = Path(os.getenv("MASK_OUTPUT_DIR", "/data/output"))
+STATUS_FILE = Path(os.getenv("STATUS_FILE", "/data/state/pipeline_status.json"))
+INPUT_DIR = Path(os.getenv("INPUT_DIR", "/data/input"))
+IMAGE_EXTENSIONS = {
+    e.strip().lower()
+    for e in os.getenv("IMAGE_EXTENSIONS", ".jpg,.jpeg,.png,.bmp,.tif,.tiff").split(",")
+    if e.strip()
+}
 
 GREEN = "#17803d"
 BLUE = "#2563eb"
@@ -154,6 +162,15 @@ def load_analytics(db_path: str) -> pd.DataFrame:
     return df.dropna(subset=["processed_at"]).sort_values("processed_at", ascending=False)
 
 
+def load_pipeline_status(status_path: Path) -> dict[str, object]:
+    if not status_path.exists():
+        return {"healthy": False, "message": "No worker status file found."}
+    try:
+        return json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"healthy": False, "message": f"Could not read status file: {exc}"}
+
+
 def metric_card(label: str, value: str, note: str = "", accent: str = GREEN) -> None:
     st.markdown(
         f"""
@@ -229,15 +246,57 @@ def growth_since_start(df: pd.DataFrame) -> tuple[float | None, float | None]:
     return delta, delta / first * 100
 
 
+def iter_source_images(input_dir: Path, extensions: set[str]) -> list[Path]:
+    if not input_dir.exists() or not input_dir.is_dir():
+        return []
+
+    images: list[Path] = []
+    for path in sorted(input_dir.rglob("*")):
+        try:
+            if path.is_file() and path.suffix.lower() in extensions:
+                images.append(path)
+        except FileNotFoundError:
+            continue
+    return images
+
+
+def rebuild_processed_state_for_existing_sources(
+    state_file: Path,
+    input_dir: Path,
+    extensions: set[str],
+) -> int:
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state: dict[str, dict[str, object]] = {}
+    for image_path in iter_source_images(input_dir, extensions):
+        try:
+            st = image_path.stat()
+        except FileNotFoundError:
+            continue
+        state[str(image_path.resolve())] = {
+            "mtime_ns": st.st_mtime_ns,
+            "size_bytes": st.st_size,
+            "output_path": "",
+            "processed_at": "cleared-from-dashboard",
+        }
+
+    tmp_path = state_file.with_suffix(state_file.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(state_file)
+    return len(state)
+
+
 def delete_analytics_and_masked_outputs(
     db_path: Path,
     state_file: Path,
     mask_output_dir: Path,
+    input_dir: Path,
+    extensions: set[str],
 ) -> list[Path]:
     deleted: list[Path] = []
     state_candidates = [
-        state_file,
         state_file.with_suffix(state_file.suffix + ".tmp"),
+        STATUS_FILE,
+        STATUS_FILE.with_suffix(STATUS_FILE.suffix + ".tmp"),
     ]
     db_candidates = [
         db_path,
@@ -256,23 +315,54 @@ def delete_analytics_and_masked_outputs(
                 path.unlink()
                 deleted.append(path)
 
+    rebuild_processed_state_for_existing_sources(state_file, input_dir, extensions)
     return deleted
 
 
 def render_data_management() -> None:
     st.sidebar.divider()
     st.sidebar.header("Data Management")
-    st.sidebar.caption("Deletes analytics, worker state, and masked outputs. Source captures are preserved.")
+    st.sidebar.caption(
+        "Deletes analytics and masked outputs. Existing source captures are marked as already seen."
+    )
     confirmation = st.sidebar.text_input("Type DELETE to confirm", type="password")
     if st.sidebar.button(
         "Delete analytics and masked images",
         disabled=confirmation != "DELETE",
         type="secondary",
     ):
-        deleted = delete_analytics_and_masked_outputs(DB_PATH, STATE_FILE, MASK_OUTPUT_DIR)
+        deleted = delete_analytics_and_masked_outputs(
+            DB_PATH,
+            STATE_FILE,
+            MASK_OUTPUT_DIR,
+            INPUT_DIR,
+            IMAGE_EXTENSIONS,
+        )
         st.cache_data.clear()
         st.sidebar.success(f"Deleted {len(deleted)} files.")
         st.rerun()
+
+
+def render_pipeline_health() -> None:
+    status = load_pipeline_status(STATUS_FILE)
+    healthy = bool(status.get("healthy"))
+    last_scan = status.get("last_scan_at", "n/a")
+    last_error = status.get("last_error")
+    message = status.get("message", "")
+    color = "#17803d" if healthy else "#b91c1c"
+    st.sidebar.header("Pipeline Health")
+    st.sidebar.markdown(
+        f"""
+        <div style="padding:0.75rem 0.85rem;border:1px solid #d7dde5;border-radius:8px;background:#fff;">
+            <div style="font-weight:700;color:{color};margin-bottom:0.35rem;">
+                {"Healthy" if healthy else "Attention required"}
+            </div>
+            <div style="font-size:0.9rem;color:#374151;">Last scan: {last_scan}</div>
+            <div style="font-size:0.9rem;color:#374151;">Last error: {last_error or message or "n/a"}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def filter_data(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
@@ -537,6 +627,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    render_pipeline_health()
     render_data_management()
 
     df = add_growth_metrics(load_analytics(str(DB_PATH)))

@@ -10,11 +10,17 @@ services:
       MASK_OUTPUT_DIR: /data/output
       STATE_FILE: /data/state/processed_state.json
       ANALYTICS_DB: /data/state/analytics.sqlite
+      STATUS_FILE: /data/state/pipeline_status.json
     volumes:
       - pi-input:/data/input:ro
       - ${MASK_OUTPUT_DIR_HOST}:/data/output
       - ${STATE_DIR_HOST}:/data/state
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /data/state/pipeline_status.json"]
+      interval: 2m
+      timeout: 10s
+      retries: 3
     deploy:
       resources:
         reservations:
@@ -29,9 +35,11 @@ services:
     env_file:
       - .env
     environment:
+      INPUT_DIR: /data/input
       ANALYTICS_DB: /data/state/analytics.sqlite
       MASK_OUTPUT_DIR: /data/output
       STATE_FILE: /data/state/processed_state.json
+      STATUS_FILE: /data/state/pipeline_status.json
     volumes:
       - pi-input:/data/input:ro
       - ${MASK_OUTPUT_DIR_HOST}:/data/output

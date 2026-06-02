@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -203,14 +204,37 @@ class DashboardLoaderTest(unittest.TestCase):
                 db_path=db_path,
                 state_file=state_file,
                 mask_output_dir=output_dir,
+                input_dir=input_dir,
+                extensions={".jpg"},
             )
 
-            self.assertGreaterEqual(len(deleted), 5)
+            self.assertGreaterEqual(len(deleted), 4)
             self.assertFalse(db_path.exists())
-            self.assertFalse(state_file.exists())
             self.assertFalse(masked_file.exists())
             self.assertTrue(source_file.exists())
+            self.assertTrue(state_file.exists())
             self.assertTrue(unrelated_file.exists())
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            source_entry = state[str(source_file.resolve())]
+            self.assertEqual(source_entry["size_bytes"], source_file.stat().st_size)
+            self.assertEqual(source_entry["mtime_ns"], source_file.stat().st_mtime_ns)
+
+    def test_load_pipeline_status(self) -> None:
+        self.require_dashboard_deps()
+
+        import dashboard
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status_file = Path(tmp) / "pipeline_status.json"
+            status_file.write_text(
+                '{"healthy": true, "last_scan_at": "2026-06-01T12:00:00+00:00"}',
+                encoding="utf-8",
+            )
+
+            status = dashboard.load_pipeline_status(status_file)
+
+        self.assertTrue(status["healthy"])
+        self.assertEqual(status["last_scan_at"], "2026-06-01T12:00:00+00:00")
 
 
 if __name__ == "__main__":

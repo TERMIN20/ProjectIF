@@ -10,6 +10,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -20,7 +21,13 @@ from PIL import Image
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
-from analytics_store import ImageAnalytics, connect, upsert_image_analytics
+from analytics_store import (
+    ImageAnalytics,
+    connect,
+    delete_analytics_older_than,
+    retry_sqlite,
+    upsert_image_analytics,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +43,9 @@ class Config:
     image_extensions: set[str]
     device: str
     precision: str
+    state_gc_interval_seconds: int
+    retention_days: int
+    status_file: Path
 
 
 def load_config() -> Config:
@@ -59,6 +69,11 @@ def load_config() -> Config:
     extensions = {e.strip().lower() for e in raw_ext.split(",") if e.strip()}
     device = os.getenv("DEVICE", "auto").strip().lower()
     precision = os.getenv("MODEL_PRECISION", "auto").strip().lower()
+    state_gc_interval_seconds = int(os.getenv("STATE_GC_INTERVAL_SECONDS", "300"))
+    retention_days = int(os.getenv("RETENTION_DAYS", "0"))
+    status_file = os.getenv("STATUS_FILE")
+    if not status_file:
+        status_file = str(Path(state_file).with_name("pipeline_status.json"))
 
     return Config(
         input_dir=Path(input_dir),
@@ -72,6 +87,9 @@ def load_config() -> Config:
         image_extensions=extensions,
         device=device,
         precision=precision,
+        state_gc_interval_seconds=state_gc_interval_seconds,
+        retention_days=retention_days,
+        status_file=Path(status_file),
     )
 
 
@@ -90,6 +108,7 @@ def validate_runtime(config: Config) -> None:
     config.mask_output_dir.mkdir(parents=True, exist_ok=True)
     config.state_file.parent.mkdir(parents=True, exist_ok=True)
     config.analytics_db.parent.mkdir(parents=True, exist_ok=True)
+    config.status_file.parent.mkdir(parents=True, exist_ok=True)
 
     if config.device in {"gpu-required", "cuda-required"} and not torch.cuda.is_available():
         raise RuntimeError("DEVICE is gpu-required, but CUDA is not available.")
@@ -146,10 +165,30 @@ def load_state(state_file: Path) -> Dict[str, Dict[str, Any]]:
     return data
 
 
+def load_directory_state(state_file: Path) -> Dict[str, Dict[str, Any]]:
+    state = load_state(state_file)
+    directories = state.get("__directories__", {})
+    if not isinstance(directories, dict):
+        return {}
+    return directories
+
+
 def atomic_write_json(path: Path, data: Dict[str, Dict[str, Any]]) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp_path.replace(path)
+
+
+def update_status_file(path: Path, payload: Dict[str, Any]) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    payload = {**payload, "updated_at": datetime.now(timezone.utc).isoformat()}
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
     tmp_path.replace(path)
 
 
@@ -158,13 +197,46 @@ def file_signature(path: Path) -> Dict[str, Any]:
     return {"mtime_ns": st.st_mtime_ns, "size_bytes": st.st_size}
 
 
-def iter_input_images(input_dir: Path, extensions: set[str]) -> Iterable[Path]:
-    for p in sorted(input_dir.rglob("*")):
+def iter_input_images(
+    input_dir: Path,
+    extensions: set[str],
+    directory_state: Dict[str, Dict[str, Any]],
+) -> tuple[list[Path], Dict[str, Dict[str, Any]]]:
+    discovered: list[Path] = []
+    next_directory_state: Dict[str, Dict[str, Any]] = {}
+
+    def walk(dir_path: Path) -> None:
         try:
-            if p.is_file() and p.suffix.lower() in extensions:
-                yield p
+            stat = dir_path.stat()
         except FileNotFoundError:
-            logging.info("Skipping path that disappeared during scan path=%s", p)
+            return
+        key = str(dir_path.resolve())
+        next_directory_state[key] = {"mtime_ns": stat.st_mtime_ns, "size_bytes": stat.st_size}
+        prev = directory_state.get(key)
+        should_recurse = True
+        if prev and prev.get("mtime_ns") == stat.st_mtime_ns and prev.get("size_bytes") == stat.st_size:
+            should_recurse = False
+        try:
+            entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
+        except FileNotFoundError:
+            return
+        for p in entries:
+            try:
+                if p.is_dir():
+                    if should_recurse:
+                        walk(p)
+                    else:
+                        prev_child = directory_state.get(str(p.resolve()))
+                        if prev_child is not None:
+                            next_directory_state[str(p.resolve())] = prev_child
+                    continue
+                if p.is_file() and p.suffix.lower() in extensions:
+                    discovered.append(p)
+            except FileNotFoundError:
+                logging.info("Skipping path that disappeared during scan path=%s", p)
+
+    walk(input_dir)
+    return discovered, next_directory_state
 
 
 def is_unseen(path: Path, state: Dict[str, Dict[str, Any]]) -> bool:
@@ -282,16 +354,33 @@ def run_loop(config: Config, run_once: bool = False) -> None:
     processor = Sam3Processor(model, confidence_threshold=0.5)
     analytics_conn = connect(config.analytics_db)
     logging.info("SAM3 ready. device=%s precision=%s", device, dtype)
+    last_cleanup = 0.0
 
     while True:
         state = load_state(config.state_file)
-        images = list(iter_input_images(config.input_dir, config.image_extensions))
+        directory_state = load_directory_state(config.state_file)
+        images, next_directory_state = iter_input_images(
+            config.input_dir, config.image_extensions, directory_state
+        )
         new_images = [p for p in images if is_unseen(p, state)]
 
         logging.info(
             "Scan complete. total_images=%d new_or_modified=%d",
             len(images),
             len(new_images),
+        )
+        if state.get("__directories__") != next_directory_state:
+            state["__directories__"] = next_directory_state
+            atomic_write_json(config.state_file, state)
+        update_status_file(
+            config.status_file,
+            {
+                "healthy": True,
+                "last_scan_at": datetime.now(timezone.utc).isoformat(),
+                "total_images": len(images),
+                "new_or_modified": len(new_images),
+                "last_error": None,
+            },
         )
 
         for image_path in new_images:
@@ -343,9 +432,44 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     "output_path": str(out_path.resolve()),
                     "processed_at": processed_at,
                 }
+                state["__directories__"] = next_directory_state
                 atomic_write_json(config.state_file, state)
             except Exception as exc:
                 logging.exception("Failed processing image=%s error=%s", image_path, exc)
+                update_status_file(
+                    config.status_file,
+                    {
+                        "healthy": False,
+                        "last_error": f"Failed processing {image_path}: {exc}",
+                    },
+                )
+
+        now = time.time()
+        if config.retention_days > 0 and now - last_cleanup >= config.state_gc_interval_seconds:
+            cleanup_cutoff = datetime.now(timezone.utc).timestamp() - (config.retention_days * 86400)
+            cleanup_cutoff_iso = datetime.fromtimestamp(cleanup_cutoff, tz=timezone.utc).isoformat()
+            try:
+                expired_outputs = retry_sqlite(
+                    partial(delete_analytics_older_than, analytics_conn, cleanup_cutoff_iso)
+                )
+                removed = 0
+                for output_path in expired_outputs:
+                    try:
+                        p = Path(output_path)
+                        if p.exists() and p.is_file():
+                            p.unlink()
+                            removed += 1
+                    except OSError:
+                        logging.exception("Failed removing expired output path=%s", output_path)
+                logging.info(
+                    "Cleanup complete cutoff=%s expired_rows=%d removed_outputs=%d",
+                    cleanup_cutoff_iso,
+                    len(expired_outputs),
+                    removed,
+                )
+            except Exception as exc:
+                logging.exception("Cleanup failed: %s", exc)
+            last_cleanup = now
 
         if run_once:
             return
