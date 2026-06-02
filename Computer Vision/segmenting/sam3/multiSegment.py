@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable
 
 import numpy as np
 import torch
@@ -184,41 +184,35 @@ def output_path_for(src: Path, output_dir: Path) -> Path:
     return output_dir / f"{src.stem}_{digest}_plant_mask.png"
 
 
-def _collect_arrays(node: Any, target_h: int, target_w: int, out: List[np.ndarray]) -> None:
-    if node is None:
-        return
+def extract_union_mask(output: Dict[str, Any], height: int, width: int) -> tuple[np.ndarray, int]:
+    raw_masks = output.get("masks")
+    if raw_masks is None:
+        raise RuntimeError("SAM3 output did not include a 'masks' field.")
 
-    if torch.is_tensor(node):
-        arr = node.detach().cpu().numpy()
-        _collect_arrays(arr, target_h, target_w, out)
-        return
+    if torch.is_tensor(raw_masks):
+        masks_arr = raw_masks.detach().cpu().numpy()
+    else:
+        masks_arr = np.asarray(raw_masks)
 
-    if isinstance(node, np.ndarray):
-        if node.ndim >= 2 and node.shape[-2:] == (target_h, target_w):
-            reshaped = node.reshape(-1, target_h, target_w)
-            out.extend([m for m in reshaped])
-        return
+    if masks_arr.size == 0:
+        return np.zeros((height, width), dtype=bool), 0
 
-    if isinstance(node, dict):
-        for value in node.values():
-            _collect_arrays(value, target_h, target_w, out)
-        return
+    masks_arr = np.squeeze(masks_arr)
+    if masks_arr.ndim == 2:
+        masks_arr = masks_arr[None, :, :]
+    elif masks_arr.ndim == 4 and masks_arr.shape[1] == 1:
+        masks_arr = masks_arr[:, 0, :, :]
 
-    if isinstance(node, (list, tuple)):
-        for value in node:
-            _collect_arrays(value, target_h, target_w, out)
-
-
-def extract_union_mask(inference_state: Any, height: int, width: int) -> np.ndarray:
-    masks: List[np.ndarray] = []
-    _collect_arrays(inference_state, height, width, masks)
-    if not masks:
-        raise RuntimeError("No valid masks found in SAM3 inference state.")
+    if masks_arr.ndim != 3 or masks_arr.shape[-2:] != (height, width):
+        raise RuntimeError(
+            "SAM3 masks have unexpected shape: "
+            f"got={masks_arr.shape} expected=(*, {height}, {width})"
+        )
 
     union_mask = np.zeros((height, width), dtype=bool)
-    for mask in masks:
+    for mask in masks_arr:
         union_mask |= (mask > 0)
-    return union_mask
+    return union_mask, int(masks_arr.shape[0])
 
 
 def save_masked_image(src_image: np.ndarray, union_mask: np.ndarray, out_path: Path) -> None:
@@ -249,20 +243,20 @@ def process_one_image(
     output_dir: Path,
     device: torch.device,
     dtype: torch.dtype,
-) -> tuple[Path, int, int]:
+) -> tuple[Path, int, int, int]:
     with Image.open(image_path) as img:
         rgb = np.array(img.convert("RGB"))
         with torch.inference_mode(), inference_context(device, dtype):
             state = processor.set_image(img.convert("RGB"))
             processor.reset_all_prompts(state)
-            state = processor.set_text_prompt(state=state, prompt=prompt_text)
-        union_mask = extract_union_mask(state, height=rgb.shape[0], width=rgb.shape[1])
+            output = processor.set_text_prompt(state=state, prompt=prompt_text)
+        union_mask, mask_count = extract_union_mask(output, height=rgb.shape[0], width=rgb.shape[1])
 
     out_path = output_path_for(image_path, output_dir)
     save_masked_image(rgb, union_mask, out_path)
     foreground_pixels = int(union_mask.sum())
     total_pixels = int(union_mask.size)
-    return out_path, foreground_pixels, total_pixels
+    return out_path, foreground_pixels, total_pixels, mask_count
 
 
 def run_loop(config: Config, run_once: bool = False) -> None:
@@ -301,7 +295,7 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     )
                     continue
                 logging.info("Processing image=%s prompt=%s", image_path, config.prompt_text)
-                out_path, foreground_pixels, total_pixels = process_one_image(
+                out_path, foreground_pixels, total_pixels, mask_count = process_one_image(
                     image_path=image_path,
                     processor=processor,
                     prompt_text=config.prompt_text,
@@ -310,8 +304,9 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     dtype=dtype,
                 )
                 logging.info(
-                    "Mask written output=%s foreground_pixels=%d total_pixels=%d foreground_ratio=%.4f",
+                    "Mask written output=%s mask_count=%d foreground_pixels=%d total_pixels=%d foreground_ratio=%.4f",
                     out_path,
+                    mask_count,
                     foreground_pixels,
                     total_pixels,
                     foreground_pixels / total_pixels if total_pixels else 0,
