@@ -71,6 +71,7 @@ def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
     )
 
 
@@ -248,7 +249,7 @@ def process_one_image(
     output_dir: Path,
     device: torch.device,
     dtype: torch.dtype,
-) -> Path:
+) -> tuple[Path, int, int]:
     with Image.open(image_path) as img:
         rgb = np.array(img.convert("RGB"))
         with torch.inference_mode(), inference_context(device, dtype):
@@ -259,7 +260,9 @@ def process_one_image(
 
     out_path = output_path_for(image_path, output_dir)
     save_masked_image(rgb, union_mask, out_path)
-    return out_path
+    foreground_pixels = int(union_mask.sum())
+    total_pixels = int(union_mask.size)
+    return out_path, foreground_pixels, total_pixels
 
 
 def run_loop(config: Config, run_once: bool = False) -> None:
@@ -298,7 +301,7 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     )
                     continue
                 logging.info("Processing image=%s prompt=%s", image_path, config.prompt_text)
-                out_path = process_one_image(
+                out_path, foreground_pixels, total_pixels = process_one_image(
                     image_path=image_path,
                     processor=processor,
                     prompt_text=config.prompt_text,
@@ -306,7 +309,13 @@ def run_loop(config: Config, run_once: bool = False) -> None:
                     device=device,
                     dtype=dtype,
                 )
-                logging.info("Mask written output=%s", out_path)
+                logging.info(
+                    "Mask written output=%s foreground_pixels=%d total_pixels=%d foreground_ratio=%.4f",
+                    out_path,
+                    foreground_pixels,
+                    total_pixels,
+                    foreground_pixels / total_pixels if total_pixels else 0,
+                )
                 run_pixel_counter(out_path)
                 state[key] = {
                     **file_signature(image_path),
