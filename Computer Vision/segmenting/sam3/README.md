@@ -47,7 +47,9 @@ Open the dashboard at:
 http://localhost:8501
 ```
 
-The dashboard includes KPI cards, interactive plant-pixel and coverage-ratio charts, date/search filters, a processed image table, and side-by-side source/masked image review. Analytics are stored in `${STATE_DIR_HOST}/analytics.sqlite`.
+The dashboard includes KPI cards for current plant size and growth, interactive plant-pixel, growth-rate, and coverage-ratio charts, date/search filters, a processed image table, and side-by-side source/masked image review. Analytics are stored in `${STATE_DIR_HOST}/analytics.sqlite`.
+
+The dashboard also includes a typed-confirm data management action. Typing `DELETE` enables deletion of analytics, pipeline state, and masked output images. Original Raspberry Pi source captures are preserved.
 
 ## Environment variables
 - `PI_SHARE_HOST`, `PI_SHARE_NAME`, `PI_SHARE_USER`, `PI_SHARE_PASSWORD`, `PI_SHARE_VERS`: Docker SMB/CIFS mount settings

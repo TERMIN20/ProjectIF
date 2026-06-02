@@ -30,9 +30,11 @@ services:
       - .env
     environment:
       ANALYTICS_DB: /data/state/analytics.sqlite
+      MASK_OUTPUT_DIR: /data/output
+      STATE_FILE: /data/state/processed_state.json
     volumes:
       - pi-input:/data/input:ro
-      - ${MASK_OUTPUT_DIR_HOST}:/data/output:ro
+      - ${MASK_OUTPUT_DIR_HOST}:/data/output
       - ${STATE_DIR_HOST}:/data/state
     ports:
       - "${DASHBOARD_PORT:-8501}:8501"
