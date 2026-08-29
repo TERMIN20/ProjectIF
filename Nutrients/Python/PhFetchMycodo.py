@@ -2,14 +2,15 @@ import datetime, json, requests, urllib3
 urllib3.disable_warnings()          # self-signed cert on the Pi
 import serial
 import time
+import os
 
 
 BT_PORT_DOWN = 'n'      
 BT_PORT_UP = 'COM10'
 BAUD_RATE = 9600   
 
-PI_IP      = "10.19.65.149"         # change to your Pi’s address
-API_KEY    = "KTjLxmvuXNyUjLL6WQtwrYcKuzImJIi+FcLuhuu/qfM5Z1h9dcioGAu58tn6F5z1NF/8G2wycyY90bfGvkxVprFwCiHtH21456TzMNUFvDzlv5Kajf5BbFjpYSss+geJOxdFYMiO/FmKuG7my5nBXvnj3YoOcLhxJNamJMdHcbA="
+PI_IP      = ""         # change to your Pi’s address
+API_KEY    = os.environ["MYCODO_API_KEY"]
 DEVICE_ID  = "0e004ed7-7557-4361-b3da-6b695b3b7360"   # PH sensor
 UNIT       = "pH"
 CHANNEL    = 0
